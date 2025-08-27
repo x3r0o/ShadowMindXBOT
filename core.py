@@ -1,7 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import os
-import asyncio
 import storage
 import fpl_api
 import logic
@@ -58,6 +57,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("من فضلك أدخل Entry ID جديد:")
         return
 
+    if choice == "main_menu":
+        await show_main_menu(update)
+        return
+
     # ======== VERIFY ENTRY ID ========
     entry_id = storage.get_entry_id()
     if not entry_id:
@@ -66,44 +69,61 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ======== MAIN MENU OPTIONS ========
     if choice == "review":
-        await query.edit_message_text("جاري تحليل الفريق...")
+        await query.edit_message_text("جاري تحليل الفريق، يرجى الانتظار...")
         result = logic.review_team(entry_id)
-        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     elif choice == "plan":
-        await query.edit_message_text("جاري تجهيز خطة الجولة...")
-        # استرجاع الإعدادات إذا موجودة
         settings = storage.get_settings()
         selected_gw = settings.get("selected_gw")
+        if not selected_gw:
+            await query.edit_message_text("لم يتم تحديد الجولة، من فضلك اختر الجولة أولاً.")
+            return
+        await query.edit_message_text("جاري تجهيز خطة الجولة، يرجى الانتظار...")
         result = logic.plan_gw(entry_id, selected_gw)
-        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     elif choice == "versus":
-        await query.edit_message_text("جاري تجهيز مقارنة مع الخصم...")
         settings = storage.get_settings()
         league_id = settings.get("league_id")
         selected_gw = settings.get("selected_gw")
+        if not league_id or not selected_gw:
+            await query.edit_message_text("لم يتم تحديد الدوري أو الجولة، من فضلك اخترهما أولاً.")
+            return
+        await query.edit_message_text("جاري تجهيز مقارنة مع الخصم، يرجى الانتظار...")
         result = logic.versus_strategy(entry_id, league_id, selected_gw)
-        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     elif choice == "alerts":
-        await query.edit_message_text("جاري جلب الأخبار والإصابات...")
+        await query.edit_message_text("جاري جلب الأخبار والإصابات، يرجى الانتظار...")
         result = alerts.get_alerts()
-        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     elif choice == "luxury":
-        await query.edit_message_text("جاري تجهيز الميزات المتقدمة...")
+        await query.edit_message_text("جاري تجهيز الميزات المتقدمة، يرجى الانتظار...")
         current_gw = logic.get_current_gw()
         cap = luxury.captaincy_advisor(entry_id, gw=current_gw)
         diffs = luxury.differentials_radar(entry_id)
         perf = luxury.performance_review(entry_id)
-        result = f"{cap}\n\n{diffs}\n\n{perf}\n\nللرجوع للقائمة الرئيسية اضغط /start"
-        await query.edit_message_text(result)
+        result = f"{cap}\n\n{diffs}\n\n{perf}"
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     elif choice == "hacker":
-        await query.edit_message_text("جاري تجهيز بيانات Hacker Mode...")
+        await query.edit_message_text("جاري تجهيز بيانات Hacker Mode، يرجى الانتظار...")
         result = hacker.main_hacker(entry_id)
-        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
 
     else:
         await query.edit_message_text("اختيار غير معروف!")
@@ -115,7 +135,7 @@ async def entry_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid = fpl_api.validate_entry_id(text)
         if valid:
             storage.set_entry_id(text)
-            await update.message.reply_text(f"تم تسجيل Entry ID: {text}")
+            await update.message.reply_text(f"Entry ID محفوظ، جاري الانتقال للقائمة الرئيسية...")
             await show_main_menu(update)
         else:
             await update.message.reply_text("Entry ID غير صحيح، حاول مرة أخرى:")
