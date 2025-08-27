@@ -7,25 +7,26 @@ DATA_FILE = "user_data.json"
 # تهيئة الملف لو مش موجود
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
-        json.dump({}, f)
+        json.dump({}, f, indent=4)
 
-
-# جلب البيانات كاملة
+# ======== جلب البيانات كاملة ========
 def load_data():
-    with open(DATA_FILE, "r") as f:
-        try:
+    try:
+        with open(DATA_FILE, "r") as f:
             data = json.load(f)
-        except json.JSONDecodeError:
-            data = {}
+    except (json.JSONDecodeError, FileNotFoundError):
+        data = {}
     return data
 
-# حفظ البيانات كاملة
+# ======== حفظ البيانات كاملة ========
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error saving data: {e}")
 
-
-# Entry ID
+# ======== Entry ID ========
 def get_entry_id():
     data = load_data()
     return data.get("entry_id")
@@ -35,8 +36,13 @@ def set_entry_id(entry_id):
     data["entry_id"] = entry_id
     save_data(data)
 
+def clear_entry_id():
+    data = load_data()
+    if "entry_id" in data:
+        del data["entry_id"]
+        save_data(data)
 
-# إعدادات الدوري والجولة
+# ======== إعدادات الدوري والجولة ========
 def get_settings():
     data = load_data()
     return {
@@ -51,3 +57,13 @@ def set_settings(league_id=None, selected_gw=None):
     if selected_gw is not None:
         data["selected_gw"] = selected_gw
     save_data(data)
+
+def clear_settings():
+    data = load_data()
+    removed = False
+    for key in ["league_id", "selected_gw"]:
+        if key in data:
+            del data[key]
+            removed = True
+    if removed:
+        save_data(data)

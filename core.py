@@ -1,27 +1,33 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import os
+import asyncio
 import storage
 import fpl_api
 import logic
 import alerts
 import luxury
 import hacker
-import os
-import asyncio
 
 # ======== TOKEN من Environment Variable ========
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("TOKEN_BOT")
 
 # ======== START COMMAND ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     entry_id = storage.get_entry_id()
-    if not entry_id:
-        await update.message.reply_text("أهلاً! من فضلك ادخل Entry ID الخاص بك:")
-        return
-    await show_main_menu(update)
+    keyboard = []
+    if entry_id:
+        keyboard = [
+            [InlineKeyboardButton("استخدم Entry ID المحفوظ", callback_data='use_saved_id')],
+            [InlineKeyboardButton("أدخل Entry ID جديد", callback_data='enter_new_id')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Entry ID موجود مسبقًا، اختر خيار:", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("أدخل Entry ID الخاص بك:")
 
 # ======== MAIN MENU ========
-async def show_main_menu(update: Update):
+async def show_main_menu(update):
     keyboard = [
         [InlineKeyboardButton("/review", callback_data='review')],
         [InlineKeyboardButton("/plan", callback_data='plan')],
@@ -41,53 +47,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     choice = query.data
-    entry_id = storage.get_entry_id()
-    
-    if not entry_id:
-        await query.edit_message_text("Entry ID غير مسجل. من فضلك أعد تشغيل البوت واكتب Entry ID.")
+
+    # ======== START OPTIONS ========
+    if choice == "use_saved_id":
+        await query.edit_message_text("استخدام Entry ID المحفوظ...")
+        await show_main_menu(update)
         return
 
-    # ======== التعامل مع كل أمر حسب الـ Flow ========
+    if choice == "enter_new_id":
+        await query.edit_message_text("من فضلك أدخل Entry ID جديد:")
+        return
+
+    # ======== VERIFY ENTRY ID ========
+    entry_id = storage.get_entry_id()
+    if not entry_id:
+        await query.edit_message_text("Entry ID غير مسجل. من فضلك أدخل ID صحيح أولاً.")
+        return
+
+    # ======== MAIN MENU OPTIONS ========
     if choice == "review":
         await query.edit_message_text("جاري تحليل الفريق...")
         result = logic.review_team(entry_id)
-        await query.edit_message_text(result)
+        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
 
     elif choice == "plan":
         await query.edit_message_text("جاري تجهيز خطة الجولة...")
-        # مثال: جولة واحدة، GW 1
-        result = logic.plan_gw(entry_id, start_gw=1)
-        await query.edit_message_text(result)
+        # استرجاع الإعدادات إذا موجودة
+        settings = storage.get_settings()
+        selected_gw = settings.get("selected_gw")
+        result = logic.plan_gw(entry_id, selected_gw)
+        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
 
     elif choice == "versus":
         await query.edit_message_text("جاري تجهيز مقارنة مع الخصم...")
-        # مثال: خصم Entry ID 999999، GW 1
-        opponent_entry_id = 999999
-        result = logic.versus_strategy(entry_id, opponent_entry_id, gw=1)
-        await query.edit_message_text(result)
+        settings = storage.get_settings()
+        league_id = settings.get("league_id")
+        selected_gw = settings.get("selected_gw")
+        result = logic.versus_strategy(entry_id, league_id, selected_gw)
+        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
 
     elif choice == "alerts":
         await query.edit_message_text("جاري جلب الأخبار والإصابات...")
         result = alerts.get_alerts()
-        await query.edit_message_text(result)
+        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
 
     elif choice == "luxury":
         await query.edit_message_text("جاري تجهيز الميزات المتقدمة...")
-        # مثال: عرض Captaincy Advisor GW 1
-        cap = luxury.captaincy_advisor(entry_id, gw=1)
+        current_gw = logic.get_current_gw()
+        cap = luxury.captaincy_advisor(entry_id, gw=current_gw)
         diffs = luxury.differentials_radar(entry_id)
         perf = luxury.performance_review(entry_id)
-        result = f"{cap}\n\n{diffs}\n\n{perf}"
+        result = f"{cap}\n\n{diffs}\n\n{perf}\n\nللرجوع للقائمة الرئيسية اضغط /start"
         await query.edit_message_text(result)
 
     elif choice == "hacker":
         await query.edit_message_text("جاري تجهيز بيانات Hacker Mode...")
-        # مثال: League ID 12345
-        league_id = 12345
-        track = hacker.track_opponents(league_id)
-        file_msg = hacker.generate_files(league_id)
-        result = f"{track}\n\n{file_msg}"
-        await query.edit_message_text(result)
+        result = hacker.main_hacker(entry_id)
+        await query.edit_message_text(result + "\n\nللرجوع للقائمة الرئيسية اضغط /start")
 
     else:
         await query.edit_message_text("اختيار غير معروف!")
@@ -96,10 +112,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def entry_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.isdigit():
-        # تحقق مستقبلي ممكن نضيف call للـ FPL API
-        storage.set_entry_id(text)
-        await update.message.reply_text(f"تم تسجيل Entry ID: {text}")
-        await show_main_menu(update)
+        valid = fpl_api.validate_entry_id(text)
+        if valid:
+            storage.set_entry_id(text)
+            await update.message.reply_text(f"تم تسجيل Entry ID: {text}")
+            await show_main_menu(update)
+        else:
+            await update.message.reply_text("Entry ID غير صحيح، حاول مرة أخرى:")
     else:
         await update.message.reply_text("Entry ID غير صحيح، حاول مرة أخرى:")
 
@@ -110,7 +129,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, entry_id_handler))
-    
+
     print("Bot is running...")
     app.run_polling()
 

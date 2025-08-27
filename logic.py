@@ -1,68 +1,86 @@
 import fpl_api
 import storage
 
+# ======== GET CURRENT GW ========
+def get_current_gw():
+    events = fpl_api.get_events()
+    for event in events:
+        if not event["finished"]:
+            return event["id"]
+    return events[-1]["id"]
+
 # ======== /review ========
 def review_team(entry_id):
     """
     تحليل الفريق الحالي واقتراح التحسينات.
-    ترجع نص يمكن عرضه مباشرة للمستخدم.
     """
-    picks_data = fpl_api.get_entry_picks(entry_id)
-    if not picks_data:
-        return "مش قادر يجلب بيانات الفريق الآن. حاول لاحقًا."
-    
-    # مثال تبسيطي: عرض اللاعبين الحاليين والنقاط
-    message = "تشكيلة الفريق الحالية:\n"
-    for pick in picks_data.get("picks", []):
-        player_id = pick["element"]
-        multiplier = pick["multiplier"]  # كابتن 2 أو vice 1
-        message += f"- لاعب ID: {player_id}, multiplier: {multiplier}\n"
-    
-    # لاحقًا ممكن نضيف اقتراحات لتحسين الفريق
-    return message
+    try:
+        picks_data = fpl_api.get_entry_picks(entry_id)
+        if not picks_data:
+            return "مش قادر يجلب بيانات الفريق الآن. حاول لاحقًا."
+        
+        message = "تشكيلة الفريق الحالية:\n"
+        for pick in picks_data.get("picks", []):
+            player_id = pick["element"]
+            multiplier = pick.get("multiplier", 1)
+            player_name = fpl_api.get_player_name(player_id)
+            message += f"- {player_name} (Multiplier: {multiplier})\n"
+        
+        message += "\nاقتراح: راجع اللاعبين المصابين وغيرهم لتعديل التشكيلة."
+        return message
+
+    except Exception as e:
+        return f"حدث خطأ أثناء تحليل الفريق: {e}"
 
 # ======== /plan ========
-def plan_gw(entry_id, start_gw, end_gw=None):
+def plan_gw(entry_id, start_gw=None, end_gw=None):
     """
-    التخطيط للجولات:
-    - start_gw: جولة البداية
-    - end_gw: جولة النهاية (لو None يبقى جولة واحدة)
+    اقتراح أفضل تشكيلة ونقلات للجولات.
     """
-    history = fpl_api.get_entry_history(entry_id)
-    if not history:
-        return "مش قادر يجلب تاريخ النقاط للفريق."
-    
-    # مثال مبسط: عرض نقاط الجولات
-    message = ""
-    if end_gw is None:
-        # جولة واحدة
-        gw = start_gw
-        points = next((g["points"] for g in history.get("current", []) if g["event"] == gw), None)
-        message = f"نقاط الجولة {gw}: {points}"
-    else:
-        # خطة طويلة المدى
-        message = "نقاط الجولات:\n"
-        for gw in range(start_gw, end_gw + 1):
-            points = next((g["points"] for g in history.get("current", []) if g["event"] == gw), None)
-            message += f"- الجولة {gw}: {points}\n"
-    
-    return message
+    try:
+        if start_gw is None:
+            start_gw = get_current_gw()
+        
+        message = f"اقتراح التشكيلة للجولة {start_gw}:\n"
+        
+        # استدعاء FPL API للحصول على أفضل اللاعبين المتاحين (مثال)
+        best_squad = fpl_api.get_best_squad(entry_id, start_gw)
+        for player in best_squad:
+            message += f"- {player['name']} ({player['position']})\n"
+        
+        if end_gw and end_gw > start_gw:
+            message += "\nخطة طويلة المدى للجولات القادمة:\n"
+            for gw in range(start_gw + 1, end_gw + 1):
+                message += f"- الجولة {gw}: راجع التشكيلة لاحقًا\n"
+        
+        message += "\nاقتراح نقلات: قم بتبديل اللاعبين المصابين أو أصحاب الأداء المنخفض."
+        return message
+
+    except Exception as e:
+        return f"حدث خطأ أثناء تجهيز خطة الجولة: {e}"
 
 # ======== /versus ========
-def versus_strategy(entry_id, opponent_entry_id, gw):
+def versus_strategy(entry_id, league_id=None, gw=None):
     """
     تحليل الجولة ضد خصم محدد ووضع خطة المواجهة.
     """
-    your_picks = fpl_api.get_entry_picks(entry_id)
-    opponent_picks = fpl_api.get_entry_picks(opponent_entry_id)
-    
-    if not your_picks or not opponent_picks:
-        return "مش قادر يجلب بيانات الفريق أو المنافس."
-    
-    # مثال مبسط: مقارنة عدد اللاعبين
-    message = f"مقارنة الجولة {gw} مع الخصم:\n"
-    message += f"- عدد لاعبيك: {len(your_picks.get('picks', []))}\n"
-    message += f"- عدد لاعبي الخصم: {len(opponent_picks.get('picks', []))}\n"
-    
-    # لاحقًا ممكن نضيف اقتراح تغييرات أو خطة لمواجهة الخصم
-    return message
+    try:
+        if gw is None:
+            gw = get_current_gw()
+        if league_id is None:
+            league_id = storage.get_settings().get("league_id")
+        if not league_id:
+            return "يرجى تحديد الدوري أولاً."
+        
+        league_data = fpl_api.get_league_data(league_id)
+        opponent = fpl_api.get_opponent(entry_id, league_data, gw)
+        if not opponent:
+            return "غير قادر على جلب بيانات الخصم."
+
+        message = f"مواجهة الجولة {gw} ضد {opponent['name']}:\n"
+        message += f"- نقاط الخصم: {opponent['points']}\n"
+        message += "- اقتراح استراتيجية: اختر التشكيلة التي تتفوق على نقاط ومراكز الخصم.\n"
+        return message
+
+    except Exception as e:
+        return f"حدث خطأ أثناء تجهيز استراتيجية المواجهة: {e}"
