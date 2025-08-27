@@ -2,13 +2,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import os
 import storage
-import fpl_api
 import logic
 import alerts
 import luxury
 import hacker
+import screenshot_handler  # ملف التعامل مع السكرين شوت
 
-# ======== TOKEN من Environment Variable ========
 TOKEN = os.getenv("BOT_TOKEN")
 
 # ======== START COMMAND ========
@@ -41,13 +40,15 @@ async def show_main_menu(update):
     elif update.callback_query:
         await update.callback_query.edit_message_text("اختر أمر من القائمة الرئيسية:", reply_markup=reply_markup)
 
-# ======== HANDLE BUTTON CLICKS ========
+# ======== BUTTON HANDLER ========
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     choice = query.data
 
-    # ======== START OPTIONS ========
+    entry_id = storage.get_entry_id()
+
+    # START OPTIONS
     if choice == "use_saved_id":
         await query.edit_message_text("استخدام Entry ID المحفوظ...")
         await show_main_menu(update)
@@ -61,94 +62,100 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
         return
 
-    # ======== VERIFY ENTRY ID ========
-    entry_id = storage.get_entry_id()
     if not entry_id:
-        await query.edit_message_text("Entry ID غير مسجل. من فضلك أدخل ID صحيح أولاً.")
+        await query.edit_message_text("Entry ID غير مسجل. من فضلك أدخل ID أولاً.")
         return
 
-    # ======== MAIN MENU OPTIONS ========
-    if choice == "review":
-        await query.edit_message_text("جاري تحليل الفريق، يرجى الانتظار...")
-        result = logic.review_team(entry_id)
-        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(result, reply_markup=reply_markup)
+    # ======== REVIEW / PLAN / LUXURY ========
+    if choice in ["review", "plan", "luxury"]:
+        existing = screenshot_handler.check_screenshot(entry_id, choice)
+        keyboard = []
+        if existing:
+            keyboard = [
+                [InlineKeyboardButton("استخدم السكرين القديم", callback_data=f"use_old_{choice}")],
+                [InlineKeyboardButton("ارفع سكرين جديد", callback_data=f"upload_new_{choice}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"تم العثور على سكرين شوت سابق لأمر {choice}. اختر خيار:", reply_markup=reply_markup)
+        else:
+            await query.edit_message_text(f"من فضلك ارفع سكرين شوت لأمر {choice}:")
+        context.user_data["current_command"] = choice
 
-    elif choice == "plan":
-        settings = storage.get_settings()
-        selected_gw = settings.get("selected_gw")
-        if not selected_gw:
-            await query.edit_message_text("لم يتم تحديد الجولة، من فضلك اختر الجولة أولاً.")
-            return
-        await query.edit_message_text("جاري تجهيز خطة الجولة، يرجى الانتظار...")
-        result = logic.plan_gw(entry_id, selected_gw)
-        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(result, reply_markup=reply_markup)
-
+    # ======== VERSUS ========
     elif choice == "versus":
-        settings = storage.get_settings()
-        league_id = settings.get("league_id")
-        selected_gw = settings.get("selected_gw")
-        if not league_id or not selected_gw:
-            await query.edit_message_text("لم يتم تحديد الدوري أو الجولة، من فضلك اخترهما أولاً.")
-            return
-        await query.edit_message_text("جاري تجهيز مقارنة مع الخصم، يرجى الانتظار...")
-        result = logic.versus_strategy(entry_id, league_id, selected_gw)
-        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(result, reply_markup=reply_markup)
+        own_existing = screenshot_handler.check_screenshot(entry_id, "versus_own")
+        opp_existing = screenshot_handler.check_screenshot(entry_id, "versus_opponent")
+        keyboard = []
+        if own_existing and opp_existing:
+            keyboard = [
+                [InlineKeyboardButton("استخدم السكرينز القديمة", callback_data="use_old_versus")],
+                [InlineKeyboardButton("ارفع سكرينز جديدة", callback_data="upload_new_versus")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("تم العثور على سكرينز قديمة للـ Versus. اختر خيار:", reply_markup=reply_markup)
+        else:
+            await query.edit_message_text("من فضلك ارفع سكرين شوت لك وللمنافس للـ Versus:")
+        context.user_data["current_command"] = "versus"
 
-    elif choice == "alerts":
-        await query.edit_message_text("جاري جلب الأخبار والإصابات، يرجى الانتظار...")
-        result = alerts.get_alerts()
-        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(result, reply_markup=reply_markup)
-
-    elif choice == "luxury":
-        await query.edit_message_text("جاري تجهيز الميزات المتقدمة، يرجى الانتظار...")
-        current_gw = logic.get_current_gw()
-        cap = luxury.captaincy_advisor(entry_id, gw=current_gw)
-        diffs = luxury.differentials_radar(entry_id)
-        perf = luxury.performance_review(entry_id)
-        result = f"{cap}\n\n{diffs}\n\n{perf}"
-        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(result, reply_markup=reply_markup)
-
+    # ======== HACKER MODE ========
     elif choice == "hacker":
-        await query.edit_message_text("جاري تجهيز بيانات Hacker Mode، يرجى الانتظار...")
         result = hacker.main_hacker(entry_id)
         keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(result, reply_markup=reply_markup)
 
-    else:
-        await query.edit_message_text("اختيار غير معروف!")
+    # ======== التعامل مع السكرين القديم أو الجديد ========
+    elif choice.startswith("use_old_") or choice.startswith("upload_new_"):
+        cmd = choice.split("_")[-1]
+        if "use_old" in choice:
+            if cmd == "versus":
+                own_players = screenshot_handler.extract_players(entry_id, "versus_own")
+                opp_players = screenshot_handler.extract_players(entry_id, "versus_opponent")
+                players = {"own": own_players, "opponent": opp_players}
+            else:
+                players = screenshot_handler.extract_players(entry_id, cmd)
+        else:
+            await query.edit_message_text(f"من فضلك ارفع السكرين شوت الجديد لأمر {cmd}:")
+            return
 
-# ======== ENTRY ID TEXT HANDLER ========
+        result = logic.run_command_with_players(cmd, entry_id, players)
+        keyboard = [[InlineKeyboardButton("الرجوع للقائمة الرئيسية", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(result, reply_markup=reply_markup)
+
+# ======== ENTRY ID HANDLER ========
 async def entry_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.isdigit():
-        valid = fpl_api.validate_entry_id(text)
-        if valid:
-            storage.set_entry_id(text)
-            await update.message.reply_text(f"Entry ID محفوظ، جاري الانتقال للقائمة الرئيسية...")
-            await show_main_menu(update)
-        else:
-            await update.message.reply_text("Entry ID غير صحيح، حاول مرة أخرى:")
+        storage.set_entry_id(text)
+        await update.message.reply_text("تم حفظ Entry ID، جاري الانتقال للقائمة الرئيسية...")
+        await show_main_menu(update)
     else:
         await update.message.reply_text("Entry ID غير صحيح، حاول مرة أخرى:")
+
+# ======== SCREENSHOT HANDLER ========
+async def screenshot_handler_func(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await update.message.photo[-1].get_file()
+    cmd = context.user_data.get("current_command")
+    file_path = screenshot_handler.save_screenshot(file, storage.get_entry_id(), cmd)
+    await update.message.reply_text("تم حفظ السكرين شوت بنجاح، جاري استخراج اللاعبين...")
+
+    if cmd == "versus":
+        players_own, players_opp = screenshot_handler.extract_players_from_file_versus(file_path)
+        context.user_data["last_players"] = {"own": players_own, "opponent": players_opp}
+        await update.message.reply_text(f"تم استخراج {len(players_own)} لاعب لك و {len(players_opp)} لاعب للمنافس.")
+    else:
+        players = screenshot_handler.extract_players_from_file(file_path)
+        context.user_data["last_players"] = players
+        await update.message.reply_text(f"تم استخراج {len(players)} لاعب من السكرين.")
 
 # ======== MAIN FUNCTION ========
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, entry_id_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, screenshot_handler_func))
 
     print("Bot is running...")
     app.run_polling()
