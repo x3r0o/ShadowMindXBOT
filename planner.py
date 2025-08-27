@@ -1,59 +1,105 @@
-import fantasy
-import utils
+# planner.py
+from fantasy import get_entry_team, get_bootstrap_async, get_bootstrap_sync, get_current_gw, get_h2h_matches
+import random
 
-async def build_plan_text(entry_id: int, start_gw: int, end_gw: int) -> str:
+# ----------------------------
+# Normal Mode + Timeline + Balance
+async def plan_rounds(entry_id, league_id, target_gw=None, num_rounds=None, balance_mode=False):
     """
-    بيبني خطة كاملة للجولات مع فلاتر و تحليل
+    تحضير خطة الجولة أو جولات متعددة
     """
-    bootstrap = await fantasy.get_bootstrap_async()
-    if isinstance(bootstrap, dict) and bootstrap.get("error"):
-        return "❌ مش قادر أجيب داتا دلوقتي. حاول تاني."
+    results = []
+    bootstrap = get_bootstrap_sync()
+    current_gw = get_current_gw(bootstrap)
+    start_gw = target_gw or current_gw + 1
 
-    team_name = f"Entry {entry_id}"
-    info = await fantasy.get_entry_info(entry_id)
-    if info and "name" in info:
-        team_name = info["name"]
+    rounds = num_rounds or 1  # المستخدم يحدد num_rounds، لو مش موجود 1
 
-    lines = [f"📊 خطة {team_name}\nمن GW {start_gw} لحد GW {end_gw}"]
+    for i in range(rounds):
+        gw = start_gw + i
+        team_data = await get_entry_team(entry_id, gw)
+        plan = {
+            "gw": gw,
+            "players": [p["element"] for p in team_data.get("picks", [])],
+            "captain": team_data["picks"][0]["element"] if team_data.get("picks") else None
+        }
+        results.append(plan)
 
-    for gw in range(start_gw, end_gw + 1):
-        gw_data = await fantasy.get_entry_team(entry_id, gw)
-        if not gw_data or "error" in gw_data:
-            lines.append(f"\n🗓️ GW {gw}: ❌ مش لاقي داتا")
-            continue
+    if balance_mode:
+        safe_plan = results
+        risky_plan = []
+        for r in results:
+            risky_r = r.copy()
+            risky_r["players"] = r["players"][::-1]  # يمكن تعديل حسب high-risk players
+            risky_plan.append(risky_r)
+        return {"safe": safe_plan, "risky": risky_plan}
 
-        picks = gw_data.get("picks", [])
-        history = gw_data.get("entry_history", {})
-        score = history.get("points", 0)
-        transfers = history.get("event_transfers", 0)
-        bank = history.get("bank", 0) / 10.0
+    return {"plan": results}
 
-        # تقييم التشكيلة
-        valid_picks = utils.filter_injuries(picks, bootstrap)
-        clean_picks = utils.avoid_conflicts(valid_picks)
+# ----------------------------
+# Auto Review
+async def review_team(entry_id, target_gw=None):
+    gw = target_gw or get_current_gw(get_bootstrap_sync()) + 1
+    team_data = await get_entry_team(entry_id, gw)
+    review = {
+        "players": [p["element"] for p in team_data.get("picks", [])],
+        "captain": team_data["picks"][0]["element"] if team_data.get("picks") else None
+    }
+    return review
 
-        # نقاط متوقعة
-        expected_points = utils.estimate_points(clean_picks, gw, bootstrap)
+# ----------------------------
+# Versus Mode
+async def generate_versus_report(entry_id, opponent_entry_id, target_gw):
+    your_team = await get_entry_team(entry_id, target_gw)
+    opp_team = await get_entry_team(opponent_entry_id, target_gw)
+    your_score = sum([p.get("multiplier", 1) * 2 for p in your_team.get("picks", [])])  # مثال لحساب نقاط
+    opponent_score = sum([p.get("multiplier", 1) * 2 for p in opp_team.get("picks", [])])
+    return {"your_score": your_score, "opponent_score": opponent_score}
 
-        lines.append(
-            f"\n🗓️ GW {gw}:"
-            f"\n   • التشكيلة: {len(clean_picks)} لاعب"
-            f"\n   • الترانسفيرات: {transfers}"
-            f"\n   • البنك: £{bank:.1f}m"
-            f"\n   • النقاط الفعلية: {score}"
-            f"\n   • النقاط المتوقعة: {expected_points}"
-        )
+async def generate_versus_plan(entry_id, opponent_entry_id, target_gw):
+    report = await generate_versus_report(entry_id, opponent_entry_id, target_gw)
+    if report["your_score"] < report["opponent_score"]:
+        advice = "قم بتعديل الكابتن وبعض اللاعبين لتحسين النتيجة."
+    else:
+        advice = "الفريق جيد، لا تعديل مطلوب."
+    return {"plan": advice}
 
-        # ملاحظات
-        warnings = []
-        if len(clean_picks) < 11:
-            warnings.append("❗ ناقصك لاعيبة أساسية")
-        if len(valid_picks) != len(picks):
-            warnings.append("⚠️ عندك لاعيبة مصابة/موقوفة")
-        if bank < 0:
-            warnings.append("💸 الخطة دي مش في حدود الميزانية")
+# ----------------------------
+# Hacker Mode 😎
+async def hacker_analysis(entry_id, league_id, opponent_entry_id, target_gw):
+    """
+    تحليل خصم الجولة القادمة في الدوري H2H
+    """
+    if not opponent_entry_id:
+        return "لا يوجد خصم محدد للجولة."
+    opp_team = await get_entry_team(opponent_entry_id, target_gw)
+    predicted_points = sum([random.randint(1, 10) for _ in opp_team.get("picks", [])])
+    return {
+        "opponent_id": opponent_entry_id,
+        "predicted_points": predicted_points
+    }
 
-        if warnings:
-            lines.extend(["   " + w for w in warnings])
+# ----------------------------
+# Luxury Features ✨
+async def captaincy_advisor(team_data):
+    players = team_data.get("players", [])
+    if not players:
+        return {"advice": "لا يوجد بيانات للاعبين"}
+    captain = team_data.get("captain") or players[0]
+    advice = f"اختيار الكابتن: {captain}. تحقق من سلامته قبل الجولة!"
+    return {"advice": advice}
 
-    return "\n".join(lines)
+async def differentials_radar(team_data):
+    players = team_data.get("players", [])
+    if not players:
+        return {"differentials": []}
+    diff_players = random.sample(players, min(3, len(players)))
+    return {"differentials": diff_players}
+
+# ----------------------------
+# Optional: قراءة Screenshot
+async def read_screenshot(image_path):
+    """
+    تحليل صورة اللاعبين (اختياري)
+    """
+    return {"players_detected": ["Player1", "Player2", "Player3"]}

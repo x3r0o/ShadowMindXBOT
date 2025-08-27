@@ -1,214 +1,270 @@
-import os
+import asyncio
 import logging
-from typing import Optional
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes, PicklePersistence
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from fantasy import get_user_leagues, get_entry_team, get_h2h_matches, get_current_gw, get_bootstrap_sync
+from planner import (
+    plan_rounds,
+    review_team,
+    generate_versus_plan,
+    generate_versus_report,
+    hacker_analysis,
+    captaincy_advisor,
+    differentials_radar
 )
-import fantasy
-import planner
-import versus
-import alerts
-import utils
+from alerts import send_alerts, captain_alert
+from utils import format_team, format_alerts, top_differentials, format_plan
 
-# ===== Logging =====
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO
-)
-log = logging.getLogger("ShadowMindX")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("FPLBot")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ----------------------------
+session = {
+    "entry_id": None,
+    "league_id": None,
+    "selected_mode": None,
+    "opponent_entry_id": None,
+    "target_gw": None,
+    "num_rounds": 1,
+    "timeline": False,
+    "balance_mode": False
+}
 
-# ===== Helpers =====
-def get_user_entry_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Optional[int]:
-    return context.user_data.get("entry_id")
-
-def set_user_entry_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int, entry_id: int):
-    context.user_data["entry_id"] = entry_id
-
-def parse_int_safe(x: str) -> Optional[int]:
-    try:
-        return int(x)
-    except:
-        return None
-
-# ===== Commands =====
+# ----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 أهلا! أنا ShadowMindX — ابنك الخارق للفانتازي 🐉\n\n"
-        "⚡ الأوامر الأساسية:\n"
-        "• /set_entry <ENTRY_ID> — اربط فريقك\n"
-        "• /plan [START END] — خطة نقاط\n"
-        "• /versus <LEAGUE_ID> <END_GW> [START_GW] — تحدي خصمك\n"
-        "• /alerts — الإصابات والإيقافات\n"
-        "• /help — كل الأوامر\n"
-    )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🧠 ShadowMindX — كل الأوامر:\n\n"
-        "📌 /set_entry <ENTRY_ID>\n"
-        "📌 /plan [START END]\n"
-        "📌 /versus <LEAGUE_ID> <END_GW> [START_GW]\n"
-        "📌 /alerts\n"
-        "📌 /api_status — متابعة حالة الـ API\n"
-    )
-
-async def api_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, msg = fantasy.check_api_health()
-    await update.message.reply_text("✅ API شغّال" if ok else f"❌ {msg}")
-
-async def set_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("استخدم: /set_entry 1234567")
-        return
-    eid = parse_int_safe(context.args[0])
-    if not eid:
-        await update.message.reply_text("⚠️ لازم تدخل ENTRY_ID رقم صحيح.")
-        return
-    set_user_entry_id(context, update.effective_chat.id, eid)
-    await update.message.reply_text(f"✅ تم حفظ Entry ID: {eid}")
-
-# ===== Planner =====
-async def plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    entry_id = get_user_entry_id(context, chat_id)
-    if not entry_id:
-        await update.message.reply_text("الأول اربط فريقك: /set_entry <ENTRY_ID>")
-        return
-
-    bootstrap = await fantasy.get_bootstrap_async()
-    if isinstance(bootstrap, dict) and bootstrap.get("error"):
-        await alerts.offer_api_wait(update, context, reason="bootstrap")
-        return
-
-    current_gw = fantasy.get_current_gw(bootstrap)
-
-    if len(context.args) == 2:
-        start_gw = parse_int_safe(context.args[0]) or current_gw
-        end_gw   = parse_int_safe(context.args[1]) or start_gw
-    elif len(context.args) == 0:
-        start_gw = end_gw = current_gw
-    else:
-        await update.message.reply_text("❌ استخدام صحيح: /plan [START END]")
-        return
-
-    text = await planner.build_plan_text(entry_id, start_gw, end_gw)
-    await update.message.reply_text(text[:4096])
-
-# ===== Versus Mode =====
-async def versus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    entry_id = get_user_entry_id(context, chat_id)
-    if not entry_id:
-        await update.message.reply_text("الأول اربط فريقك: /set_entry <ENTRY_ID>")
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ استخدام صحيح: /versus <LEAGUE_ID> <END_GW> [START_GW]")
-        return
-
-    league_id = parse_int_safe(context.args[0])
-    end_gw = parse_int_safe(context.args[1])
-    if not league_id or not end_gw:
-        await update.message.reply_text("⚠️ LEAGUE_ID و END_GW لازم يكونوا أرقام.")
-        return
-
-    bootstrap = await fantasy.get_bootstrap_async()
-    if isinstance(bootstrap, dict) and bootstrap.get("error"):
-        await alerts.offer_api_wait(update, context, reason="bootstrap")
-        return
-    current_gw = fantasy.get_current_gw(bootstrap)
-    start_gw = parse_int_safe(context.args[2]) if len(context.args) >= 3 else current_gw
-
-    cb_base = f"vs|{league_id}|{start_gw}|{end_gw}"
     keyboard = [
-        [
-            InlineKeyboardButton("📝 تقرير", callback_data=cb_base + "|report"),
-            InlineKeyboardButton("🎯 خطة", callback_data=cb_base + "|plan"),
-        ],
-        [InlineKeyboardButton("📝+🎯 الاتنين", callback_data=cb_base + "|both")]
+        [InlineKeyboardButton("مودات 🕹️", callback_data="choose_mode")],
+        [InlineKeyboardButton("Help ℹ️", callback_data="help")],
+        [InlineKeyboardButton("Alerts 🚨", callback_data="alerts")]
     ]
-    await update.message.reply_text(
-        f"⚔️ Versus Mode\nالدوري: {league_id}\nالجولات: {start_gw} → {end_gw}\n"
-        "تحب أديك إيه؟", reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("أهلاً بك في FPL Bot 🐉\nاختر الخيار المناسب:", reply_markup=reply_markup)
 
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------------------
+async def get_h2h_opponent(league_id: int, gw: int, entry_id: int):
+    try:
+        matches_data = await get_h2h_matches(league_id)
+        matches = matches_data.get("matches", [])
+        for m in matches:
+            if m["event"] == gw:
+                if m["entry_1"] == entry_id:
+                    return {"id": m["entry_2"], "name": m.get("entry_2_name")}
+                elif m["entry_2"] == entry_id:
+                    return {"id": m["entry_1"], "name": m.get("entry_1_name")}
+        return {"id": None, "name": None}
+    except Exception as e:
+        log.error(f"get_h2h_opponent failed: {e}")
+        return {"id": None, "name": None}
+
+# ----------------------------
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data.split("|")
-    if len(data) >= 5 and data[0] == "vs":
-        league_id, start_gw, end_gw, action = int(data[1]), int(data[2]), int(data[3]), data[4]
-        chat_id = update.effective_chat.id
-        entry_id = get_user_entry_id(context, chat_id)
-        if not entry_id:
-            await query.edit_message_text("سجل فريقك الأول: /set_entry <ENTRY_ID>")
-            return
 
+    if query.data == "choose_mode":
+        keyboard = [
+            [InlineKeyboardButton("Normal Mode 🟢", callback_data="normal")],
+            [InlineKeyboardButton("Versus Mode 🔴", callback_data="versus")],
+            [InlineKeyboardButton("Auto Review 🔵", callback_data="autoreview")],
+            [InlineKeyboardButton("Hacker Mode 😎", callback_data="hacker")],
+            [InlineKeyboardButton("Luxury Features ✨", callback_data="luxury")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("اختار المود:", reply_markup=reply_markup)
+
+    elif query.data in ["normal", "versus", "autoreview", "luxury"]:
+        session["selected_mode"] = query.data
+        await query.edit_message_text(f"تم اختيار المود: {query.data}\nمن فضلك ادخل رقم الـ entry ID الخاص بك:")
+
+    elif query.data == "hacker":
+        session["selected_mode"] = "hacker"
+        if not session.get("entry_id"):
+            await query.edit_message_text("من فضلك ادخل الـ entry ID أولاً.")
+            return
         try:
-            report_text, plan_text = await versus.report_and_plan(entry_id, league_id, start_gw, end_gw)
-        except versus.ApiDownError as e:
-            await alerts.offer_api_wait(update, context, reason=str(e))
+            leagues = await get_user_leagues(session["entry_id"])
+        except Exception as e:
+            await query.edit_message_text(f"❌ حدث خطأ في جلب الدوريات: {e}")
             return
+        if len(leagues) > 1:
+            keyboard = [[InlineKeyboardButton(l["name"], callback_data=f"league_{l['id']}")] for l in leagues]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("اختر الدوري لتحليل Hacker Mode:", reply_markup=reply_markup)
+        elif len(leagues) == 1:
+            session["league_id"] = leagues[0]["id"]
+            await ask_hacker_gw(update)
 
-        if action == "report":
-            await query.edit_message_text(report_text[:4096])
-        elif action == "plan":
-            await query.edit_message_text(plan_text[:4096])
+    elif query.data == "help":
+        help_text = (
+            "/start → بداية البوت\n"
+            "مودات → اختيار المود (Normal, Versus, Auto Review, Hacker, Luxury)\n"
+            "Alerts → آخر injuries / risks / captain alerts\n"
+            "بعد اختيار المود → أزرار إضافية حسب المود"
+        )
+        await query.edit_message_text(help_text)
+
+    elif query.data == "alerts":
+        if session["entry_id"]:
+            try:
+                alerts_dict = await send_alerts(session["entry_id"])
+                alerts_text = format_alerts(alerts_dict)
+                captain_warn = await captain_alert(session["entry_id"])
+                await update.message.reply_text(f"{alerts_text}\n{captain_warn}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ حدث خطأ أثناء جلب التنبيهات: {e}")
         else:
-            await query.edit_message_text(report_text[:4096])
-            if plan_text:
-                await context.bot.send_message(chat_id=chat_id, text=plan_text[:4096])
+            await update.message.reply_text("ادخل الـ entry ID أولاً.")
 
-# ===== Alerts =====
-async def alerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    entry_id = get_user_entry_id(context, chat_id)
-    if not entry_id:
-        await update.message.reply_text("سجل فريقك الأول: /set_entry <ENTRY_ID>")
+    elif query.data == "hacker_refresh":
+        if session["selected_mode"] == "hacker":
+            await execute_mode(update, context)
+
+# ----------------------------
+async def ask_hacker_gw(update):
+    try:
+        bootstrap = get_bootstrap_sync()
+        current_gw = get_current_gw(bootstrap)
+        session["target_gw"] = current_gw + 1
+        opponent_info = await get_h2h_opponent(session["league_id"], session["target_gw"], session["entry_id"])
+        session["opponent_entry_id"] = opponent_info.get("id")
+        await update.callback_query.edit_message_text(
+            f"🕵️ سيتم تحليل Hacker Mode للجولة {session['target_gw']} في الدوري المختار."
+        )
+    except Exception as e:
+        log.error(f"ask_hacker_gw failed: {e}")
+        await update.callback_query.edit_message_text(f"❌ حدث خطأ أثناء تحديد الجولة: {e}")
+
+# ----------------------------
+async def handle_entry_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.get("selected_mode") or session.get("entry_id"):
         return
-    text = await alerts.team_injuries_now(entry_id)
-    await update.message.reply_text(text[:4096])
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("⚠️ ادخل رقم صحيح للـ entry ID.")
+        return
+    session["entry_id"] = int(text)
+    try:
+        leagues = await get_user_leagues(session["entry_id"])
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ في جلب الدوريات: {e}")
+        return
+    if len(leagues) > 1:
+        keyboard = [[InlineKeyboardButton(l["name"], callback_data=f"league_{l['id']}")] for l in leagues]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("اختار الدوري:", reply_markup=reply_markup)
+    elif len(leagues) == 1:
+        session["league_id"] = leagues[0]["id"]
+        await update.message.reply_text("تم تحديد الدوري تلقائيًا، يمكنك الآن استخدام المود المختار.")
+    else:
+        await update.message.reply_text("لا يوجد دوري لهذا الفريق.")
+    if session["selected_mode"] == "normal":
+        await update.message.reply_text("كم عدد الجولات التي تريد التخطيط لها؟")
 
-# ===== API Fallback =====
-async def api_retry_job(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
-    ok, _ = fantasy.check_api_health()
-    if ok:
-        await context.bot.send_message(chat_id, "✅ الـ API رجع! تقدر تعيد الأمر.")
-        context.job.schedule_removal()
+# ----------------------------
+async def handle_num_rounds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if session.get("selected_mode") == "normal" and not session.get("num_rounds_set"):
+        text = update.message.text.strip()
+        if text.isdigit() and int(text) > 0:
+            session["num_rounds"] = int(text)
+            session["num_rounds_set"] = True
+            await update.message.reply_text(f"✅ تم ضبط عدد الجولات على {session['num_rounds']}.")
+        else:
+            await update.message.reply_text("⚠️ ادخل رقم صحيح للجولات.")
 
-async def api_wait_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------------------
+async def league_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "api_wait_60s":
-        context.job_queue.run_once(api_retry_job, when=60, chat_id=update.effective_chat.id)
-        await query.edit_message_text("⏳ هستنى 60 ثانية وأشيّك وأبلغك.")
-    elif query.data == "api_use_cache":
-        await query.edit_message_text("📦 هشوف لو في داتا قديمة أستخدمها.")
+    if query.data.startswith("league_"):
+        league_id = int(query.data.split("_")[1])
+        session["league_id"] = league_id
+        if session["selected_mode"] == "hacker":
+            await ask_hacker_gw(update)
+        else:
+            await query.edit_message_text("✅ تم اختيار الدوري، يمكنك الآن استخدام المود المختار.")
 
-# ===== Main =====
-def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("⚠️ BOT_TOKEN مش موجود في Environment Variables")
+# ----------------------------
+async def execute_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.get("selected_mode") or not session.get("entry_id"):
+        await update.message.reply_text("⚠️ ادخل entry ID واختر مود أولاً.")
+        return
 
-    persistence = PicklePersistence(filepath="state.pkl")
-    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+    mode = session["selected_mode"]
+    entry_id = session["entry_id"]
+    league_id = session.get("league_id")
+    opponent_id = session.get("opponent_entry_id")
+    target_gw = session.get("target_gw") or (get_current_gw(get_bootstrap_sync()) + 1)
 
+    try:
+        if mode == "normal":
+            plan_dict = await plan_rounds(entry_id, league_id, target_gw, num_rounds=session["num_rounds"], balance_mode=session["balance_mode"])
+            plan_text = format_plan(plan_dict)
+            await update.message.reply_text(f"📋 خطتك للجولات القادمة:\n{plan_text}")
+
+        elif mode == "autoreview":
+            team_data = await review_team(entry_id, target_gw)
+            formatted_team = "\n".join(format_team(team_data))
+            await update.message.reply_text(f"📝 تقرير الفريق:\n{formatted_team}")
+
+        elif mode == "versus":
+            if not opponent_id:
+                await update.message.reply_text("⚠️ ادخل opponent entry ID لاستخدام Versus Mode.")
+                return
+            plan_dict = await generate_versus_plan(entry_id, opponent_id, target_gw)
+            report_dict = await generate_versus_report(entry_id, opponent_id, target_gw)
+            plan_text = format_plan(plan_dict)
+            report_text = f"⚔️ نقاطك: {report_dict.get('your_score', 0)}\n👤 نقاط الخصم: {report_dict.get('opponent_score', 0)}"
+            await update.message.reply_text(f"{report_text}\n📋 خطة ضد الخصم:\n{plan_text}")
+
+        elif mode == "hacker":
+            if not league_id or not opponent_id:
+                await update.message.reply_text("⚠️ اختر الدوري والجولة أولاً.")
+                return
+            data = await hacker_analysis(entry_id, league_id, opponent_id, target_gw)
+            keyboard = [
+                [InlineKeyboardButton("Refresh 🔄", callback_data="hacker_refresh")],
+                [InlineKeyboardButton("رجوع للمودات ↩️", callback_data="choose_mode")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(f"🕵️ Hacker Mode Analysis 🕵️\n\n{data}", reply_markup=reply_markup)
+
+        elif mode == "luxury":
+            team_data = await review_team(entry_id, target_gw)
+            captain_advice = await captaincy_advisor(team_data)
+            diff_sorted = sorted(top_differentials(team_data))  # يمكن تعديل حسب الأفضلية
+            plan_dict = await plan_rounds(entry_id, league_id, target_gw, num_rounds=session.get("num_rounds",1), balance_mode=session["balance_mode"])
+            plan_text = format_plan(plan_dict)
+            await update.message.reply_text(f"{captain_advice}\n✨ Differentials: {', '.join(diff_sorted)}\n📋 خطتك:\n{plan_text}")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ أثناء تنفيذ المود: {e}")
+        log.error(f"execute_mode failed: {e}")
+
+# ----------------------------
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not session.get("entry_id"):
+        await handle_entry_id(update, context)
+    elif session.get("selected_mode") == "normal" and not session.get("num_rounds_set"):
+        await handle_num_rounds(update, context)
+    else:
+        await execute_mode(update, context)
+
+# ----------------------------
+async def main():
+    TOKEN = os.getenv("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("❌ BOT_TOKEN غير موجود في Environment Variables")
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    # Handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("api_status", api_status))
-    app.add_handler(CommandHandler("set_entry", set_entry))
-    app.add_handler(CommandHandler("plan", plan_cmd))
-    app.add_handler(CommandHandler("versus", versus_cmd))
-    app.add_handler(CommandHandler("alerts", alerts_cmd))
-    app.add_handler(CallbackQueryHandler(callbacks, pattern=r"^vs\|"))
-    app.add_handler(CallbackQueryHandler(api_wait_button, pattern=r"^api_"))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(league_handler, pattern=r"^league_\d+$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    log.info("🚀 ShadowMindX is running...")
-    app.run_polling()
+    await app.run_polling()
 
+# ----------------------------
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
