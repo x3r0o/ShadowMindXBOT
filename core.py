@@ -10,7 +10,7 @@ import luxury
 import hacker
 
 # ======== TOKEN من Environment Variable ========
-TOKEN = os.getenv("TOKEN_BOT")
+TOKEN = os.getenv("BOT_TOKEN")
 
 # ======== START COMMAND ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
