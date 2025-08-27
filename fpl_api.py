@@ -26,6 +26,17 @@ def get_entry(entry_id):
         print(f"Error fetching entry {entry_id}: {e}")
         return None
 
+# ======== التحقق من Entry ID ========
+def validate_entry_id(entry_id):
+    """
+    تتحقق من صحة Entry ID.
+    ترجع True لو موجود في FPL API، False لو مش موجود.
+    """
+    entry = get_entry(entry_id)
+    if entry and "entry" in entry:
+        return True
+    return False
+
 # ======== تاريخ النقاط للفريق ========
 def get_entry_history(entry_id):
     """ترجع تاريخ نقاط الفريق لكل جولة"""
