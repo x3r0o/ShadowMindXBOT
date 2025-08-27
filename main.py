@@ -251,10 +251,13 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await execute_mode(update, context)
 
 # ----------------------------
-async def main():
+if __name__ == "__main__":
+   
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
         raise ValueError("❌ BOT_TOKEN غير موجود في Environment Variables")
+
+    from telegram.ext import ApplicationBuilder
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -264,7 +267,5 @@ async def main():
     app.add_handler(CallbackQueryHandler(league_handler, pattern=r"^league_\d+$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    await app.run_polling()
-
-# ----------------------------
-app.run_polling()
+    # الطريقة الصحيحة لتشغيل البوت بدون asyncio.run()
+    app.run_polling()
