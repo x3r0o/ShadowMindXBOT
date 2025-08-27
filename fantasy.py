@@ -1,4 +1,3 @@
-# fantasy.py
 import aiohttp
 import requests
 import logging
@@ -9,10 +8,13 @@ BASE_URL = "https://fantasy.premierleague.com/api"
 
 # ===== Health Check =====
 def check_api_health() -> (bool, str):
+    """
+    يتأكد إن API شغال قبل أي طلبات
+    """
     try:
         r = requests.get(f"{BASE_URL}/bootstrap-static/", timeout=5)
         if r.status_code == 200:
-            return True, "OK"
+            return True, "API OK"
         return False, f"Status {r.status_code}"
     except Exception as e:
         return False, str(e)
@@ -22,6 +24,9 @@ def check_api_health() -> (bool, str):
 def get_bootstrap_sync():
     try:
         r = requests.get(f"{BASE_URL}/bootstrap-static/", timeout=10)
+        if r.status_code != 200:
+            log.error(f"Bootstrap failed, status: {r.status_code}")
+            return {"error": f"status {r.status_code}"}
         return r.json()
     except Exception as e:
         log.error(f"bootstrap failed: {e}")
@@ -121,7 +126,6 @@ async def get_h2h_opponent(league_id: int, gw: int, entry_id: int):
                         return {"id": m["entry_2"], "name": m.get("entry_2_name")}
                     elif m["entry_2"] == entry_id:
                         return {"id": m["entry_1"], "name": m.get("entry_1_name")}
-            # لو في صفحة تانية
             if matches_data.get("pagination", {}).get("has_next"):
                 page += 1
             else:

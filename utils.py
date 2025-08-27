@@ -1,4 +1,3 @@
-# utils.py
 import random
 from fantasy import get_bootstrap_sync
 
@@ -13,6 +12,8 @@ def get_all_players():
         return _players_cache
     if not _bootstrap_cache:
         _bootstrap_cache = get_bootstrap_sync()
+        if "error" in _bootstrap_cache:
+            return {}
     elements = _bootstrap_cache.get("elements", [])
     _players_cache = {e["id"]: e for e in elements}
     return _players_cache
@@ -51,6 +52,8 @@ def format_captain(team_data):
 # ----------------------------
 # تنسيق التنبيهات
 def format_alerts(alerts_dict):
+    if not alerts_dict:
+        return "لا توجد تنبيهات."
     alerts_list = alerts_dict.get("alerts", [])
     diff_list = alerts_dict.get("differentials", [])
     alerts_text = "🚨 Alerts:\n" + ("\n".join(alerts_list) if alerts_list else "لا توجد إصابات أو تحذيرات حالياً.")

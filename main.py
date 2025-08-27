@@ -1,9 +1,15 @@
-import asyncio
 import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from fantasy import get_user_leagues, get_entry_team, get_h2h_matches, get_current_gw, get_bootstrap_sync
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
+from fantasy import get_user_leagues, get_entry_team, get_h2h_matches, get_current_gw, get_bootstrap_sync, check_api_health
 from planner import (
     plan_rounds,
     review_team,
@@ -42,9 +48,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أهلاً بك في FPL Bot 🐉\nاختر الخيار المناسب:", reply_markup=reply_markup)
 
 # ----------------------------
+async def checkapi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ok, status = check_api_health()
+    if ok:
+        await update.message.reply_text(f"✅ API شغال: {status}")
+    else:
+        await update.message.reply_text(f"❌ API فيه مشكلة: {status}")
+
+# ----------------------------
 async def get_h2h_opponent(league_id: int, gw: int, entry_id: int):
     try:
         matches_data = await get_h2h_matches(league_id)
+        if "error" in matches_data:
+            return {"id": None, "name": None}
         matches = matches_data.get("matches", [])
         for m in matches:
             if m["event"] == gw:
@@ -98,6 +114,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "help":
         help_text = (
             "/start → بداية البوت\n"
+            "/checkapi → التحقق من صحة الـ API\n"
             "مودات → اختيار المود (Normal, Versus, Auto Review, Hacker, Luxury)\n"
             "Alerts → آخر injuries / risks / captain alerts\n"
             "بعد اختيار المود → أزرار إضافية حسب المود"
@@ -232,7 +249,7 @@ async def execute_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif mode == "luxury":
             team_data = await review_team(entry_id, target_gw)
             captain_advice = await captaincy_advisor(team_data)
-            diff_sorted = sorted(top_differentials(team_data))  # يمكن تعديل حسب الأفضلية
+            diff_sorted = sorted(top_differentials(team_data))
             plan_dict = await plan_rounds(entry_id, league_id, target_gw, num_rounds=session.get("num_rounds",1), balance_mode=session["balance_mode"])
             plan_text = format_plan(plan_dict)
             await update.message.reply_text(f"{captain_advice}\n✨ Differentials: {', '.join(diff_sorted)}\n📋 خطتك:\n{plan_text}")
@@ -252,20 +269,17 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------------------
 if __name__ == "__main__":
-   
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
         raise ValueError("❌ BOT_TOKEN غير موجود في Environment Variables")
-
-    from telegram.ext import ApplicationBuilder
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     # Handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("checkapi", checkapi_command))  # ← الأمر الجديد
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CallbackQueryHandler(league_handler, pattern=r"^league_\d+$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    # الطريقة الصحيحة لتشغيل البوت بدون asyncio.run()
     app.run_polling()
