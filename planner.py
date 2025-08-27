@@ -1,5 +1,5 @@
 # planner.py
-from fantasy import get_entry_team, get_bootstrap_sync, get_current_gw, get_h2h_matches
+from fantasy import get_entry_team, get_bootstrap_sync, get_current_gw
 import random
 
 # ----------------------------
