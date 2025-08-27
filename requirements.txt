@@ -2,3 +2,5 @@ python-telegram-bot==20.3
 requests
 aiohttp
 logging
+asyncio
+random
